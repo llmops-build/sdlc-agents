@@ -1,0 +1,56 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "sdlc-agents",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-03-03",
+	"compatibility_flags": ["nodejs_compat"],
+	"observability": { "enabled": true },
+	"rules": [{ "type": "Text", "globs": ["**/*.md"] }],
+
+	"workflows": [
+		{
+			"name": "sdlc-agent-workflow",
+			"binding": "SDLC_AGENT_WORKFLOW",
+			"class_name": "SdlcAgentWorkflow",
+		},
+	],
+
+	"containers": [
+		{
+			"class_name": "Sandbox",
+			"image": "./container/Dockerfile",
+			"instance_type": "basic",
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"class_name": "Sandbox",
+				"name": "SANDBOX",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"new_sqlite_classes": ["Sandbox"],
+			"tag": "v1",
+		},
+	],
+
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "sdlc-agents-db",
+			"database_id": "<REPLACE_WITH_D1_DATABASE_ID>",
+		},
+	],
+	"kv_namespaces": [
+		{
+			"binding": "CACHE",
+			"id": "<REPLACE_WITH_KV_NAMESPACE_ID>",
+		},
+	],
+	"vars": {
+		"LLMOPS_GATEWAY_URL": "https://gateway.llmops.build/v1",
+	},
+}

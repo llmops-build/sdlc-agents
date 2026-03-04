@@ -1,0 +1,228 @@
+import { WorkflowEntrypoint } from 'cloudflare:workers';
+import { getSandbox } from '@cloudflare/sandbox';
+import { getInstallationToken } from '../github/app';
+import { getDefaultBranch, getLatestCommitSha, createBranch, openPR, addComment, closeIssue } from '../github/api';
+import { callGateway } from '../lib/llmops';
+import plannerPrompt from '../agents/planner.md';
+import type { SdlcWorkflowParams, PlanResult, CodingResult, ApprovalEvent } from '../lib/types';
+
+/**
+ * 3-step SDLC workflow:
+ *   1. Plan  — generate implementation plan via Claude, post as issue comment
+ *   2. Code  — spin up sandbox, clone repo, run `claude -p`, commit, push, open PR
+ *   3. Wait  — hibernate until human merges/closes the PR (Copilot reviews automatically)
+ *   4. Finalize — close issue, update D1 status
+ */
+export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParams> {
+	async run(event: Readonly<CloudflareWorkersModule.WorkflowEvent<SdlcWorkflowParams>>, step: CloudflareWorkersModule.WorkflowStep) {
+		const params = event.payload;
+		const sessionId = `issue-${params.repoOwner}/${params.repoName}-${params.issueNumber}`;
+
+		// ── Step 0: Persist session ──────────────────────────────────────
+		await step.do('init-session', async () => {
+			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+			await addComment(token, params.repoOwner, params.repoName, params.issueNumber, '🤖 **SDLC Agent** picking up this issue. Planning…');
+
+			await this.env.DB.prepare(
+				`INSERT OR REPLACE INTO sessions (id, issue_number, repo_owner, repo_name, issue_title, issue_body, status)
+				 VALUES (?, ?, ?, ?, ?, ?, 'planning')`,
+			)
+				.bind(sessionId, params.issueNumber, params.repoOwner, params.repoName, params.issueTitle, params.issueBody)
+				.run();
+		});
+
+		// ── Step 1: Plan ─────────────────────────────────────────────────
+		const plan = await step.do('plan', async () => {
+			const startTime = Date.now();
+
+			// Build user message from issue context
+			const userMessage = [
+				`## Repository: ${params.repoOwner}/${params.repoName}`,
+				'',
+				`## Issue Title: ${params.issueTitle}`,
+				'',
+				`## Issue Body:`,
+				params.issueBody || '(no description provided)',
+			].join('\n');
+
+			// Call Claude with the planner prompt (loaded from planner.md)
+			const response = await callGateway(this.env, {
+				system: plannerPrompt,
+				messages: [{ role: 'user', content: userMessage }],
+			});
+
+			// Parse structured plan from response
+			const text = response.text;
+			const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, text];
+			const result = JSON.parse(jsonMatch[1]!.trim()) as PlanResult;
+
+			if (!result.plan || !result.branchName || !result.estimatedFiles) {
+				throw new Error('Invalid plan response: missing required fields');
+			}
+
+			// Post plan as issue comment
+			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+			const planComment = [
+				'## 📋 Implementation Plan',
+				'',
+				result.plan,
+				'',
+				`**Branch:** \`${result.branchName}\``,
+				`**Estimated files:** ${result.estimatedFiles.join(', ')}`,
+				'',
+				'---',
+				'_Starting implementation…_',
+			].join('\n');
+			await addComment(token, params.repoOwner, params.repoName, params.issueNumber, planComment);
+
+			// Log step
+			await this.env.DB.prepare(
+				`INSERT INTO step_logs (session_id, step_name, status, output_summary, duration_ms) VALUES (?, 'plan', 'completed', ?, ?)`,
+			)
+				.bind(sessionId, JSON.stringify(result), Date.now() - startTime)
+				.run();
+
+			await this.env.DB.prepare(`UPDATE sessions SET plan = ?, branch_name = ?, status = 'coding' WHERE id = ?`)
+				.bind(result.plan, result.branchName, sessionId)
+				.run();
+
+			return result;
+		});
+
+		// ── Step 2: Code ─────────────────────────────────────────────────
+		const codingResult = await step.do('code', async () => {
+			const startTime = Date.now();
+
+			// Fresh token for this step (tokens expire after 1 hour, workflow may have hibernated)
+			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+
+			// Create branch on GitHub
+			const defaultBranch = await getDefaultBranch(token, params.repoOwner, params.repoName);
+			const latestSha = await getLatestCommitSha(token, params.repoOwner, params.repoName, defaultBranch);
+			await createBranch(token, params.repoOwner, params.repoName, plan.branchName, latestSha);
+
+			// Spin up sandbox container
+			const sandbox = getSandbox(this.env.SANDBOX, sessionId, { keepAlive: true });
+
+			try {
+				// Set env vars for Claude Code and git push
+				await sandbox.setEnvVars({
+					ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
+					CLAUDE_CODE_USE_BEDROCK: '0',
+				});
+
+				// Clone repo into sandbox
+				const cloneUrl = `https://x-access-token:${token}@github.com/${params.repoOwner}/${params.repoName}.git`;
+				await sandbox.gitCheckout(cloneUrl, {
+					branch: plan.branchName,
+					targetDir: 'workspace',
+				});
+
+				// Build the prompt for Claude Code
+				const claudePrompt = [
+					`Implement the following plan for issue #${params.issueNumber}: "${params.issueTitle}"`,
+					'',
+					plan.plan,
+					'',
+					`Files to focus on: ${plan.estimatedFiles.join(', ')}`,
+					'',
+					'After making changes, commit all changes with a descriptive commit message.',
+					'Do NOT push — the CI will handle that.',
+				].join('\n');
+
+				// Run Claude Code headless
+				const escapedPrompt = claudePrompt.replace(/'/g, "'\\''");
+				await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep'`, {
+					cwd: '/home/user/workspace',
+					timeout: 600_000,
+				});
+
+				// Push the branch
+				await sandbox.exec(`git push origin ${plan.branchName}`, {
+					cwd: '/home/user/workspace',
+				});
+			} finally {
+				await sandbox.destroy();
+			}
+
+			// Open PR
+			const pr = await openPR(token, params.repoOwner, params.repoName, {
+				title: `[SDLC Agent] ${params.issueTitle}`,
+				body: [
+					`Closes #${params.issueNumber}`,
+					'',
+					'## Plan',
+					plan.plan,
+					'',
+					'---',
+					'_This PR was generated by the SDLC Agent. Copilot will review automatically._',
+				].join('\n'),
+				head: plan.branchName,
+				base: defaultBranch,
+			});
+
+			// Update session
+			await this.env.DB.prepare(`UPDATE sessions SET pr_number = ?, pr_url = ?, status = 'awaiting_approval' WHERE id = ?`)
+				.bind(pr.number, pr.html_url, sessionId)
+				.run();
+
+			await this.env.DB.prepare(
+				`INSERT INTO step_logs (session_id, step_name, status, output_summary, duration_ms) VALUES (?, 'code', 'completed', ?, ?)`,
+			)
+				.bind(sessionId, JSON.stringify({ prNumber: pr.number, prUrl: pr.html_url }), Date.now() - startTime)
+				.run();
+
+			// Notify on the issue
+			await addComment(
+				token,
+				params.repoOwner,
+				params.repoName,
+				params.issueNumber,
+				`✅ Implementation complete! PR opened: ${pr.html_url}\n\nCopilot will review automatically. Please merge when ready.`,
+			);
+
+			return {
+				branchName: plan.branchName,
+				prNumber: pr.number,
+				prUrl: pr.html_url,
+				filesChanged: plan.estimatedFiles,
+				commitSha: latestSha,
+			} satisfies CodingResult;
+		});
+
+		// ── Step 3: Wait for human approval ──────────────────────────────
+		// Copilot reviews the PR automatically (configured via repo rulesets).
+		// Workflow hibernates here until the PR is merged or closed.
+		const approval = await step.waitForEvent<ApprovalEvent>('wait-for-human-approval', {
+			timeout: '7 days',
+			type: 'pr-resolution',
+		});
+
+		// ── Step 4: Finalize ─────────────────────────────────────────────
+		await step.do('finalize', async () => {
+			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+
+			if (approval.payload.action === 'approved' && approval.payload.merged) {
+				// Close the issue as completed
+				await closeIssue(token, params.repoOwner, params.repoName, params.issueNumber);
+				await this.env.DB.prepare(`UPDATE sessions SET status = 'completed', updated_at = datetime('now') WHERE id = ?`)
+					.bind(sessionId)
+					.run();
+			} else {
+				await this.env.DB.prepare(
+					`UPDATE sessions SET status = 'failed', error_message = 'PR closed without merge', updated_at = datetime('now') WHERE id = ?`,
+				)
+					.bind(sessionId)
+					.run();
+			}
+
+			await this.env.DB.prepare(
+				`INSERT INTO step_logs (session_id, step_name, status, output_summary) VALUES (?, 'finalize', 'completed', ?)`,
+			)
+				.bind(sessionId, JSON.stringify(approval.payload))
+				.run();
+		});
+
+		return { sessionId, prNumber: codingResult.prNumber, prUrl: codingResult.prUrl };
+	}
+}
