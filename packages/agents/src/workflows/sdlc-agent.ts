@@ -132,10 +132,38 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 				// Run Claude Code headless
 				const escapedPrompt = claudePrompt.replace(/'/g, "'\\''");
-				await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep'`, {
+				const claudeResult = await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep'`, {
 					cwd: '/home/user/workspace',
 					timeout: 600_000,
 				});
+				console.log('Claude Code stdout:', claudeResult.stdout);
+				if (claudeResult.stderr) console.error('Claude Code stderr:', claudeResult.stderr);
+
+				// Check if Claude Code actually made any commits
+				const diffCheck = await sandbox.exec(`git diff origin/${defaultBranch} --stat`, {
+					cwd: '/home/user/workspace',
+				});
+
+				if (!diffCheck.stdout?.trim()) {
+					// No changes — report back and bail
+					await addComment(
+						token,
+						params.repoOwner,
+						params.repoName,
+						params.issueNumber,
+						`⚠️ Claude Code ran but produced no changes. The plan may need to be more specific.\n\n<details><summary>Claude Code output</summary>\n\n\`\`\`\n${claudeResult.stdout?.slice(0, 2000) ?? '(empty)'}\n\`\`\`\n</details>`,
+					);
+					await this.env.DB.prepare(`UPDATE sessions SET status = 'failed', error_message = 'No changes produced' WHERE id = ?`)
+						.bind(sessionId)
+						.run();
+					return {
+						branchName: plan.branchName,
+						prNumber: 0,
+						prUrl: '',
+						filesChanged: [],
+						commitSha: latestSha,
+					} satisfies CodingResult;
+				}
 
 				// Push the branch
 				await sandbox.exec(`git push origin ${plan.branchName}`, {
@@ -189,6 +217,11 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				commitSha: latestSha,
 			} satisfies CodingResult;
 		});
+
+		// If no PR was opened (no changes produced), end the workflow early
+		if (codingResult.prNumber === 0) {
+			return { sessionId, prNumber: 0, prUrl: '' };
+		}
 
 		// ── Step 3: Wait for human approval ──────────────────────────────
 		// Copilot reviews the PR automatically (configured via repo rulesets).
