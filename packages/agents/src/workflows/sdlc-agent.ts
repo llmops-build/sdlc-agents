@@ -132,7 +132,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 				// Run Claude Code headless
 				const escapedPrompt = claudePrompt.replace(/'/g, "'\\''");
-				const claudeResult = await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep'`, {
+				const claudeResult = await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep' --output-format json | jq '.result'`, {
 					cwd: '/home/user/workspace',
 					timeout: 600_000,
 				});
