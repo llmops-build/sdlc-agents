@@ -72,30 +72,22 @@ async function handleIssueLabeled(c: AppContext, payload: IssuesLabeledPayload) 
 
 	const repo = payload.repository;
 	const issue = payload.issue;
-	const instanceId = `issue-${repo.owner.login}-${repo.name}-${issue.number}`;
+	const instanceId = `issue-${repo.owner.login}-${repo.name}-${issue.number}-${Date.now()}`;
 
-	try {
-		const instance = await c.env.SDLC_AGENT_WORKFLOW.create({
-			id: instanceId,
-			params: {
-				issueNumber: issue.number,
-				repoOwner: repo.owner.login,
-				repoName: repo.name,
-				issueTitle: issue.title,
-				issueBody: issue.body ?? '',
-				installationId: payload.installation.id,
-				labelTrigger: label,
-			},
-		});
+	const instance = await c.env.SDLC_AGENT_WORKFLOW.create({
+		id: instanceId,
+		params: {
+			issueNumber: issue.number,
+			repoOwner: repo.owner.login,
+			repoName: repo.name,
+			issueTitle: issue.title,
+			issueBody: issue.body ?? '',
+			installationId: payload.installation.id,
+			labelTrigger: label,
+		},
+	});
 
-		return c.json({ message: 'Workflow started', instanceId: instance.id }, 201);
-	} catch (err: any) {
-		// If the workflow already exists (duplicate label event), return 409
-		if (err.message?.includes('already exists')) {
-			return c.json({ message: 'Workflow already running for this issue', instanceId }, 409);
-		}
-		throw err;
-	}
+	return c.json({ message: 'Workflow started', instanceId: instance.id }, 201);
 }
 
 /** Handle pull_request.closed — send event to resume hibernating workflow */
