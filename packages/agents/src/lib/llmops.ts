@@ -44,7 +44,7 @@ export async function callGateway(
 	messages.push(...opts.messages);
 
 	const completion = await client.chat.completions.create({
-		model: opts.model ?? '@openrouter/minimax/minimax-m2.5',
+		model: opts.model ?? 'minimax/minimax-m2.5',
 		messages,
 	});
 
