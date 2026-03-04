@@ -1,19 +1,17 @@
-import { llmops } from '@llmops/sdk';
 import OpenAI from 'openai';
 
-/** Create an OpenAI client pointed at the llmops.build gateway */
-export function createClient(env: Env): OpenAI {
-	const client = llmops({
-		providers: [
-			{
-				slug: 'openrouter',
-				provider: 'openrouter',
-				apiKey: env.OPENROUTER_API_KEY,
-			},
-		],
-	});
+// TODO: Re-enable @llmops/sdk once the better-auth build issue is resolved.
+// import { llmops } from '@llmops/sdk';
+// For now, configure OpenAI directly with OpenRouter base URL.
 
-	return new OpenAI(client.provider());
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+
+/** Create an OpenAI client pointed at OpenRouter */
+export function createClient(env: Env): OpenAI {
+	return new OpenAI({
+		baseURL: OPENROUTER_BASE_URL,
+		apiKey: env.OPENROUTER_API_KEY,
+	});
 }
 
 export interface GatewayMessage {
@@ -27,7 +25,7 @@ export interface GatewayResponse {
 	usage: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
-/** Call a model via the llmops.build gateway using OpenAI-compatible API */
+/** Call a model via OpenRouter using OpenAI-compatible API */
 export async function callGateway(
 	env: Env,
 	opts: {
