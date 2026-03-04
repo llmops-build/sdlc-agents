@@ -1,5 +1,6 @@
 /** Parameters passed to the SDLC agent workflow */
 export interface SdlcWorkflowParams {
+	instanceId: string;
 	issueNumber: number;
 	repoOwner: string;
 	repoName: string;

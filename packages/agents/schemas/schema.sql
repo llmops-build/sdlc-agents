@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS sessions (
-    id TEXT PRIMARY KEY,                    -- workflow instance ID
+    id TEXT PRIMARY KEY,                    -- session ID (issue-owner-repo-number)
+    workflow_instance_id TEXT,              -- Cloudflare Workflow instance ID (includes timestamp)
     issue_number INTEGER NOT NULL,
     repo_owner TEXT NOT NULL,
     repo_name TEXT NOT NULL,

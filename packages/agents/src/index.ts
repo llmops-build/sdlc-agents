@@ -77,6 +77,7 @@ async function handleIssueLabeled(c: AppContext, payload: IssuesLabeledPayload) 
 	const instance = await c.env.SDLC_AGENT_WORKFLOW.create({
 		id: instanceId,
 		params: {
+			instanceId,
 			issueNumber: issue.number,
 			repoOwner: repo.owner.login,
 			repoName: repo.name,
@@ -99,16 +100,16 @@ async function handlePRClosed(c: AppContext, payload: PullRequestClosedPayload) 
 	// The branch name format from our planner is deterministic
 	// We look up the session in D1 to find the workflow instance ID
 	const session = await c.env.DB.prepare(
-		`SELECT id FROM sessions WHERE repo_owner = ? AND repo_name = ? AND pr_number = ? AND status = 'awaiting_approval'`
+		`SELECT workflow_instance_id FROM sessions WHERE repo_owner = ? AND repo_name = ? AND pr_number = ? AND status = 'awaiting_approval'`
 	)
 		.bind(repo.owner.login, repo.name, pr.number)
-		.first<{ id: string }>();
+		.first<{ workflow_instance_id: string }>();
 
-	if (!session) {
+	if (!session?.workflow_instance_id) {
 		return c.json({ message: 'No matching workflow found for this PR' }, 200);
 	}
 
-	const instance = await c.env.SDLC_AGENT_WORKFLOW.get(session.id);
+	const instance = await c.env.SDLC_AGENT_WORKFLOW.get(session.workflow_instance_id);
 	await instance.sendEvent({
 		type: 'pr-resolution',
 		payload: {
@@ -118,7 +119,7 @@ async function handlePRClosed(c: AppContext, payload: PullRequestClosedPayload) 
 		},
 	});
 
-	return c.json({ message: 'Event sent to workflow', instanceId: session.id }, 200);
+	return c.json({ message: 'Event sent to workflow', instanceId: session.workflow_instance_id }, 200);
 }
 
 export default app;

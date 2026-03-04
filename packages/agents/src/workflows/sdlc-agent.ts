@@ -24,10 +24,10 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 			await addComment(token, params.repoOwner, params.repoName, params.issueNumber, '🤖 **SDLC Agent** picking up this issue. Planning…');
 
 			await this.env.DB.prepare(
-				`INSERT OR REPLACE INTO sessions (id, issue_number, repo_owner, repo_name, issue_title, issue_body, status)
-				 VALUES (?, ?, ?, ?, ?, ?, 'planning')`,
+				`INSERT OR REPLACE INTO sessions (id, workflow_instance_id, issue_number, repo_owner, repo_name, issue_title, issue_body, status)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'planning')`,
 			)
-				.bind(sessionId, params.issueNumber, params.repoOwner, params.repoName, params.issueTitle, params.issueBody)
+				.bind(sessionId, params.instanceId, params.issueNumber, params.repoOwner, params.repoName, params.issueTitle, params.issueBody)
 				.run();
 		});
 
