@@ -11,8 +11,8 @@ importers:
   packages/agents:
     dependencies:
       '@cloudflare/sandbox':
-        specifier: ^0.5.0
-        version: 0.5.6
+        specifier: ^0.7.11
+        version: 0.7.11
       '@llmops/sdk':
         specifier: ^0.6.7
         version: 0.6.7(c0baf13f7874836888bb43fb8fbbe983)
@@ -223,19 +223,25 @@ packages:
   '@chevrotain/utils@10.5.0':
     resolution: {integrity: sha512-hBzuU5+JjB2cqNZyszkDHZgOSrUUT8V3dhgRl8Q9Gp6dAj/H5+KILGjbhDpc3Iy9qmqlm/akuOI2ut9VUtzJxQ==}
 
-  '@cloudflare/containers@0.0.30':
-    resolution: {integrity: sha512-i148xBgmyn/pje82ZIyuTr/Ae0BT/YWwa1/GTJcw6DxEjUHAzZLaBCiX446U9OeuJ2rBh/L/9FIzxX5iYNt1AQ==}
+  '@cloudflare/containers@0.1.1':
+    resolution: {integrity: sha512-YTdobRTnTlUOUPMFemufH367A9Z8pDfZ+UboYMLbGpO0VlvEXZDiioSmXPQMHld2vRtkL31mcRii3bcbQU6fdw==}
 
   '@cloudflare/kv-asset-handler@0.4.2':
     resolution: {integrity: sha512-SIOD2DxrRRwQ+jgzlXCqoEFiKOFqaPjhnNTGKXSRLvp1HiOvapLaFG2kEr9dYQTYe8rKrd9uvDUzmAITeNyaHQ==}
     engines: {node: '>=18.0.0'}
 
-  '@cloudflare/sandbox@0.5.6':
-    resolution: {integrity: sha512-N4mdUY5lVWQHQcAZnTecJne95uSyf7KVPbJGMr3G6jS7oyphriw6Hxa5I/HlDUdMWjaTBgeOuDEb4m3wo2IyOg==}
+  '@cloudflare/sandbox@0.7.11':
+    resolution: {integrity: sha512-usHACnZr3N+arMKV2LHbgQunQVnSF1FzOIM2Kw4NGY8ynwJ5Ex/fBvOUMwhuGqxac8BxgfcHbwlgDJCDjAIagQ==}
     peerDependencies:
       '@openai/agents': ^0.3.3
+      '@opencode-ai/sdk': ^1.1.40
+      '@xterm/xterm': '>=5.0.0'
     peerDependenciesMeta:
       '@openai/agents':
+        optional: true
+      '@opencode-ai/sdk':
+        optional: true
+      '@xterm/xterm':
         optional: true
 
   '@cloudflare/unenv-preset@2.14.0':
@@ -1955,6 +1961,9 @@ packages:
     resolution: {integrity: sha512-NZKeq9AfyQvEeNlN0zSYAaWrmBffJh3IELMZfRpJVWgrpEbtEpnjvzqBPf+mxoI287JohRDoa+/nsfqqiZmF6g==}
     engines: {node: '>= 6.0.0'}
 
+  aws4fetch@1.0.20:
+    resolution: {integrity: sha512-/djoAN709iY65ETD6LKCtyyEI04XIBP5xVvfmNxsEP0uJB5tyaGBztSryRr4HqMStr9R06PisQE7m9zDTXKu6g==}
+
   baseline-browser-mapping@2.10.0:
     resolution: {integrity: sha512-lIyg0szRfYbiy67j9KN8IyeD7q7hcmqnJ1ddWmNt19ItGpNN64mnllmxUNFIOdOm6by97jlL6wfpTTJrmnjWAA==}
     engines: {node: '>=6.0.0'}
@@ -3608,13 +3617,14 @@ snapshots:
 
   '@chevrotain/utils@10.5.0': {}
 
-  '@cloudflare/containers@0.0.30': {}
+  '@cloudflare/containers@0.1.1': {}
 
   '@cloudflare/kv-asset-handler@0.4.2': {}
 
-  '@cloudflare/sandbox@0.5.6':
+  '@cloudflare/sandbox@0.7.11':
     dependencies:
-      '@cloudflare/containers': 0.0.30
+      '@cloudflare/containers': 0.1.1
+      aws4fetch: 1.0.20
 
   '@cloudflare/unenv-preset@2.14.0(unenv@2.0.0-rc.24)(workerd@1.20260305.0)':
     dependencies:
@@ -5987,6 +5997,8 @@ snapshots:
   avsc@5.7.9: {}
 
   aws-ssl-profiles@1.1.2: {}
+
+  aws4fetch@1.0.20: {}
 
   baseline-browser-mapping@2.10.0: {}
 

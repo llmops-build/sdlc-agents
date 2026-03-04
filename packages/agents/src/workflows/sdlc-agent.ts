@@ -115,7 +115,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				const cloneUrl = `https://x-access-token:${token}@github.com/${params.repoOwner}/${params.repoName}.git`;
 				await sandbox.gitCheckout(cloneUrl, {
 					branch: plan.branchName,
-					targetDir: 'workspace',
+					targetDir: '/workspace/repo',
 				});
 
 				// Build the prompt for Claude Code
@@ -133,7 +133,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				// Run Claude Code headless
 				const escapedPrompt = claudePrompt.replace(/'/g, "'\\''");
 				const claudeResult = await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep' --output-format json | jq '.result'`, {
-					cwd: '/home/user/workspace',
+					cwd: '/workspace/repo',
 					timeout: 600_000,
 				});
 				console.log('Claude Code stdout:', claudeResult.stdout);
@@ -141,19 +141,19 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 				// If Claude Code left uncommitted changes, commit them as a fallback
 				const statusResult = await sandbox.exec('git status --porcelain', {
-					cwd: '/home/user/workspace',
+					cwd: '/workspace/repo',
 				});
 				if (statusResult.stdout?.trim()) {
 					console.log('Uncommitted changes found, creating fallback commit');
 					await sandbox.exec('git add -A', { cwd: '/home/user/workspace' });
 					await sandbox.exec(`git commit -m "feat: implement changes for #${params.issueNumber}"`, {
-						cwd: '/home/user/workspace',
+						cwd: '/workspace/repo',
 					});
 				}
 
 				// Check if there are any commits ahead of the base branch
 				const logCheck = await sandbox.exec(`git log origin/${defaultBranch}..HEAD --oneline`, {
-					cwd: '/home/user/workspace',
+					cwd: '/workspace/repo',
 				});
 
 				if (!logCheck.stdout?.trim()) {
@@ -181,7 +181,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 				// Push the branch
 				await sandbox.exec(`git push origin ${plan.branchName}`, {
-					cwd: '/home/user/workspace',
+					cwd: '/workspace/repo',
 				});
 			} finally {
 				await sandbox.destroy();
