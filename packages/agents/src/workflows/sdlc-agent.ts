@@ -180,7 +180,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				console.log('Commits to push:', logCheck.stdout);
 
 				// Push the branch
-				await sandbox.exec(`git push origin ${plan.branchName}`, {
+				await sandbox.exec(`git push --force origin ${plan.branchName}`, {
 					cwd: '/workspace/repo',
 				});
 			} finally {
