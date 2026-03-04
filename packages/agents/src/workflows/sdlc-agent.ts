@@ -105,9 +105,12 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 			const sandbox = getSandbox(this.env.SANDBOX, sessionId, { keepAlive: true });
 
 			try {
+				const apiKey = this.env.ANTHROPIC_API_KEY;
+				console.log(`ANTHROPIC_API_KEY present: ${!!apiKey}, length: ${apiKey?.length}, prefix: ${apiKey?.slice(0, 7)}...`);
+
 				// Set env vars for Claude Code and git push
 				await sandbox.setEnvVars({
-					ANTHROPIC_API_KEY: this.env.ANTHROPIC_API_KEY,
+					ANTHROPIC_API_KEY: apiKey,
 					CLAUDE_CODE_USE_BEDROCK: '0',
 				});
 
@@ -117,6 +120,10 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 					branch: plan.branchName,
 					targetDir: '/workspace/repo',
 				});
+
+				// Verify env var is accessible inside the sandbox
+				const envCheck = await sandbox.exec('echo "KEY_SET=${ANTHROPIC_API_KEY:+yes}"');
+				console.log('Sandbox env check:', envCheck.stdout);
 
 				// Build the prompt for Claude Code
 				const claudePrompt = [
@@ -130,31 +137,28 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 					'Do NOT push — the CI will handle that.',
 				].join('\n');
 
-				// Run Claude Code headless
-				const escapedPrompt = claudePrompt.replace(/'/g, "'\\''");
-				const claudeResult = await sandbox.exec(`claude -p '${escapedPrompt}' --allowedTools 'Edit,Write,Bash,Read,Glob,Grep' --output-format json | jq '.result'`, {
-					cwd: '/workspace/repo',
-					timeout: 600_000,
-				});
+				// Run Claude Code headless (use cd && pattern per official Cloudflare example)
+				const escapedPrompt = claudePrompt.replace(/"/g, '\\"');
+				const claudeResult = await sandbox.exec(
+					`cd /workspace/repo && claude -p "${escapedPrompt}" --allowedTools 'Edit,Write,Bash,Read,Glob,Grep' --output-format json | jq '.result'`,
+					{
+						timeout: 600_000,
+						env: { ANTHROPIC_API_KEY: apiKey },
+					},
+				);
 				console.log('Claude Code stdout:', claudeResult.stdout);
 				if (claudeResult.stderr) console.error('Claude Code stderr:', claudeResult.stderr);
 
 				// If Claude Code left uncommitted changes, commit them as a fallback
-				const statusResult = await sandbox.exec('git status --porcelain', {
-					cwd: '/workspace/repo',
-				});
+				const statusResult = await sandbox.exec('cd /workspace/repo && git status --porcelain');
 				if (statusResult.stdout?.trim()) {
 					console.log('Uncommitted changes found, creating fallback commit');
-					await sandbox.exec('git add -A', { cwd: '/home/user/workspace' });
-					await sandbox.exec(`git commit -m "feat: implement changes for #${params.issueNumber}"`, {
-						cwd: '/workspace/repo',
-					});
+					await sandbox.exec('cd /workspace/repo && git add -A');
+					await sandbox.exec(`cd /workspace/repo && git commit -m "feat: implement changes for #${params.issueNumber}"`);
 				}
 
 				// Check if there are any commits ahead of the base branch
-				const logCheck = await sandbox.exec(`git log origin/${defaultBranch}..HEAD --oneline`, {
-					cwd: '/workspace/repo',
-				});
+				const logCheck = await sandbox.exec(`cd /workspace/repo && git log origin/${defaultBranch}..HEAD --oneline`);
 
 				if (!logCheck.stdout?.trim()) {
 					// No commits at all — report back and bail
@@ -180,9 +184,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				console.log('Commits to push:', logCheck.stdout);
 
 				// Push the branch
-				await sandbox.exec(`git push --force origin ${plan.branchName}`, {
-					cwd: '/workspace/repo',
-				});
+				await sandbox.exec(`cd /workspace/repo && git push --force origin ${plan.branchName}`);
 			} finally {
 				await sandbox.destroy();
 			}
