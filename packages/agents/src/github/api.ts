@@ -35,12 +35,19 @@ export async function getLatestCommitSha(token: string, owner: string, repo: str
 	return data.object.sha;
 }
 
-/** Create a new branch from a given SHA */
+/** Create a new branch from a given SHA. No-op if the branch already exists. */
 export async function createBranch(token: string, owner: string, repo: string, branchName: string, sha: string): Promise<void> {
-	await ghFetch<unknown>(token, `/repos/${owner}/${repo}/git/refs`, {
+	const res = await fetch(`${GITHUB_API}/repos/${owner}/${repo}/git/refs`, {
 		method: 'POST',
+		headers: HEADERS(token),
 		body: JSON.stringify({ ref: `refs/heads/${branchName}`, sha }),
 	});
+	if (res.ok || res.status === 422) {
+		// 422 = "Reference already exists" — safe to ignore
+		return;
+	}
+	const body = await res.text();
+	throw new Error(`GitHub API error ${res.status} createBranch: ${body}`);
 }
 
 /** Open a pull request */
