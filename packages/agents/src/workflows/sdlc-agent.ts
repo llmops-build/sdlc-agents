@@ -111,6 +111,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				// Set env vars for Claude Code and git push
 				await sandbox.setEnvVars({
 					ANTHROPIC_API_KEY: apiKey,
+					CLAUDE_CODE_OAUTH_TOKEN: apiKey,
 					CLAUDE_CODE_USE_BEDROCK: '0',
 				});
 
@@ -121,8 +122,8 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 					targetDir: '/workspace/repo',
 				});
 
-				// Verify env var is accessible inside the sandbox
-				const envCheck = await sandbox.exec('echo "KEY_SET=${ANTHROPIC_API_KEY:+yes}"');
+				// Verify env vars are accessible inside the sandbox
+				const envCheck = await sandbox.exec('echo "API_KEY=${ANTHROPIC_API_KEY:+yes} OAUTH=${CLAUDE_CODE_OAUTH_TOKEN:+yes}"');
 				console.log('Sandbox env check:', envCheck.stdout);
 
 				// Build the prompt for Claude Code
@@ -143,7 +144,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 					`cd /workspace/repo && claude -p "${escapedPrompt}" --allowedTools 'Edit,Write,Bash,Read,Glob,Grep' --output-format json | jq '.result'`,
 					{
 						timeout: 600_000,
-						env: { ANTHROPIC_API_KEY: apiKey },
+						env: { ANTHROPIC_API_KEY: apiKey, CLAUDE_CODE_OAUTH_TOKEN: apiKey },
 					},
 				);
 				console.log('Claude Code stdout:', claudeResult.stdout);
