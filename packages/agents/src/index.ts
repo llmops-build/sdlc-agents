@@ -43,15 +43,20 @@ app.post('/webhooks/github', async (c) => {
 	const event = c.req.header('x-github-event');
 	const payload = JSON.parse(body);
 
-	if (event === 'issues' && payload.action === 'labeled') {
-		return handleIssueLabeled(c, payload as IssuesLabeledPayload);
-	}
+	try {
+		if (event === 'issues' && payload.action === 'labeled') {
+			return await handleIssueLabeled(c, payload as IssuesLabeledPayload);
+		}
 
-	if (event === 'pull_request' && payload.action === 'closed') {
-		return handlePRClosed(c, payload as PullRequestClosedPayload);
-	}
+		if (event === 'pull_request' && payload.action === 'closed') {
+			return await handlePRClosed(c, payload as PullRequestClosedPayload);
+		}
 
-	return c.json({ message: 'Event ignored' }, 200);
+		return c.json({ message: 'Event ignored' }, 200);
+	} catch (err: any) {
+		console.error('Webhook handler error:', err);
+		return c.json({ error: err.message ?? 'Internal error' }, 500);
+	}
 });
 
 /** Handle issues.labeled — kick off a new SDLC workflow */
@@ -67,7 +72,7 @@ async function handleIssueLabeled(c: AppContext, payload: IssuesLabeledPayload) 
 
 	const repo = payload.repository;
 	const issue = payload.issue;
-	const instanceId = `issue-${repo.full_name}-${issue.number}`;
+	const instanceId = `issue-${repo.owner.login}-${repo.name}-${issue.number}`;
 
 	try {
 		const instance = await c.env.SDLC_AGENT_WORKFLOW.create({

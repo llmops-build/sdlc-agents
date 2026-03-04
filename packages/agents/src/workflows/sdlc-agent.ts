@@ -16,7 +16,7 @@ import type { SdlcWorkflowParams, PlanResult, CodingResult, ApprovalEvent } from
 export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParams> {
 	async run(event: Readonly<CloudflareWorkersModule.WorkflowEvent<SdlcWorkflowParams>>, step: CloudflareWorkersModule.WorkflowStep) {
 		const params = event.payload;
-		const sessionId = `issue-${params.repoOwner}/${params.repoName}-${params.issueNumber}`;
+		const sessionId = `issue-${params.repoOwner}-${params.repoName}-${params.issueNumber}`;
 
 		// ── Step 0: Persist session ──────────────────────────────────────
 		await step.do('init-session', async () => {
