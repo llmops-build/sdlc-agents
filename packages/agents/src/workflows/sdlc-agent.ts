@@ -139,13 +139,25 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				console.log('Claude Code stdout:', claudeResult.stdout);
 				if (claudeResult.stderr) console.error('Claude Code stderr:', claudeResult.stderr);
 
-				// Check if Claude Code actually made any commits
-				const diffCheck = await sandbox.exec(`git diff origin/${defaultBranch} --stat`, {
+				// If Claude Code left uncommitted changes, commit them as a fallback
+				const statusResult = await sandbox.exec('git status --porcelain', {
+					cwd: '/home/user/workspace',
+				});
+				if (statusResult.stdout?.trim()) {
+					console.log('Uncommitted changes found, creating fallback commit');
+					await sandbox.exec('git add -A', { cwd: '/home/user/workspace' });
+					await sandbox.exec(`git commit -m "feat: implement changes for #${params.issueNumber}"`, {
+						cwd: '/home/user/workspace',
+					});
+				}
+
+				// Check if there are any commits ahead of the base branch
+				const logCheck = await sandbox.exec(`git log origin/${defaultBranch}..HEAD --oneline`, {
 					cwd: '/home/user/workspace',
 				});
 
-				if (!diffCheck.stdout?.trim()) {
-					// No changes — report back and bail
+				if (!logCheck.stdout?.trim()) {
+					// No commits at all — report back and bail
 					await addComment(
 						token,
 						params.repoOwner,
@@ -164,6 +176,8 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 						commitSha: latestSha,
 					} satisfies CodingResult;
 				}
+
+				console.log('Commits to push:', logCheck.stdout);
 
 				// Push the branch
 				await sandbox.exec(`git push origin ${plan.branchName}`, {
