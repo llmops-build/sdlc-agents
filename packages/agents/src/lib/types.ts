@@ -55,6 +55,9 @@ export interface IssuesLabeledPayload {
 		};
 		default_branch: string;
 	};
+	sender?: {
+		login: string;
+	};
 	installation?: {
 		id: number;
 	};

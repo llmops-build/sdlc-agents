@@ -66,6 +66,11 @@ async function handleIssueLabeled(c: AppContext, payload: IssuesLabeledPayload) 
 		return c.json({ message: `Label "${label}" ignored, only "agent" triggers workflow` }, 200);
 	}
 
+	const sender = payload.sender?.login;
+	if (sender !== 'chtushar') {
+		return c.json({ message: `Sender "${sender}" not authorized to trigger workflow` }, 200);
+	}
+
 	if (!payload.installation?.id) {
 		return c.json({ error: 'Missing installation ID in webhook payload' }, 400);
 	}
