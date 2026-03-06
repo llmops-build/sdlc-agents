@@ -37,14 +37,14 @@ app.post('/webhooks/github', async (c) => {
 	}
 
 	const ghApp = getGitHubApp(c.env);
-	try {
-		await ghApp.webhooks.verify(body, signature.replace('sha256=', ''));
-	} catch {
+	const verified = await ghApp.webhooks.verify(body, signature);
+	if (!verified) {
 		return c.json({ error: 'Invalid signature' }, 401);
 	}
 
 	const event = c.req.header('x-github-event');
 	const payload = JSON.parse(body);
+	console.log(`Webhook received: event=${event}, action=${payload.action}`);
 
 	try {
 		if (event === 'issues' && payload.action === 'labeled') {
