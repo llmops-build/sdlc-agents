@@ -159,6 +159,7 @@ async function handlePRReviewSubmitted(c: AppContext, payload: PullRequestReview
 	});
 
 	const reviewComments: ReviewComment[] = comments.map((c) => ({
+		id: c.id,
 		path: c.path,
 		line: c.line ?? null,
 		body: c.body,

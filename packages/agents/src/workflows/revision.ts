@@ -40,6 +40,8 @@ export class RevisionWorkflow extends WorkflowEntrypoint<Env, RevisionWorkflowPa
 
 			const sandbox = getSandbox(this.env.SANDBOX, `revision-${params.sessionId}-${Date.now()}`, { keepAlive: true });
 
+			let overallReply: string | undefined;
+
 			try {
 				const apiKey = this.env.ANTHROPIC_API_KEY;
 
@@ -77,6 +79,13 @@ export class RevisionWorkflow extends WorkflowEntrypoint<Env, RevisionWorkflowPa
 					await sandbox.exec(`cd /workspace/repo && git commit -m "fix: address review feedback for PR #${params.prNumber}"`);
 				}
 
+				// Read review responses from sandbox
+				const responsesResult = await sandbox.exec('cat /workspace/repo/review-responses.json 2>/dev/null || echo "[]"');
+				let responses: Array<{ commentId: number; reply: string }> = [];
+				try {
+					responses = JSON.parse(responsesResult.stdout);
+				} catch {}
+
 				// Check if we have new commits to push
 				const logCheck = await sandbox.exec(`cd /workspace/repo && git log origin/${params.branchName}..HEAD --oneline`);
 
@@ -96,16 +105,37 @@ export class RevisionWorkflow extends WorkflowEntrypoint<Env, RevisionWorkflowPa
 
 				// Push changes
 				await sandbox.exec(`cd /workspace/repo && git push origin ${params.branchName}`);
+
+				// Post replies to individual review comments
+				for (const r of responses) {
+					try {
+						if (r.commentId === 0) continue;
+						await octokit.rest.pulls.createReplyForReviewComment({
+							owner: params.repoOwner,
+							repo: params.repoName,
+							pull_number: params.prNumber,
+							comment_id: r.commentId,
+							body: r.reply,
+						});
+					} catch (err) {
+						console.error(`Failed to reply to comment ${r.commentId}:`, err);
+					}
+				}
+
+				overallReply = responses.find((r) => r.commentId === 0)?.reply;
 			} finally {
 				await sandbox.destroy();
 			}
 
-			// Comment on PR with completion
+			// Comment on PR with completion (include overall reply if present)
+			const completionBody = overallReply
+				? `✅ Revisions pushed. Please review the updated changes.\n\n${overallReply}`
+				: '✅ Revisions pushed. Please review the updated changes.';
 			await octokit.rest.issues.createComment({
 				owner: params.repoOwner,
 				repo: params.repoName,
 				issue_number: params.prNumber,
-				body: '✅ Revisions pushed. Please review the updated changes.',
+				body: completionBody,
 			});
 
 			// Set status back to awaiting_review
@@ -140,7 +170,7 @@ function buildReviewPrompt(params: RevisionWorkflowParams): string {
 		for (const comment of params.reviewComments) {
 			parts.push(
 				'',
-				`**File: \`${comment.path}\`${comment.line ? ` (line ${comment.line})` : ''}**`,
+				`**Comment ID: ${comment.id} — File: \`${comment.path}\`${comment.line ? ` (line ${comment.line})` : ''}**`,
 				'```diff',
 				comment.diffHunk,
 				'```',
@@ -155,6 +185,13 @@ function buildReviewPrompt(params: RevisionWorkflowParams): string {
 		'Address all the review feedback above. Make the necessary code changes.',
 		'After making changes, commit all changes with a descriptive commit message.',
 		'Do NOT push — the CI will handle that.',
+		'',
+		'After making all changes, write a file `review-responses.json` in the repo root with your reply to each comment:',
+		'```json',
+		'[{"commentId": 12345, "reply": "Fixed — changed X to Y because..."}, ...]',
+		'```',
+		'Use the Comment ID from each inline comment above. If no code change was needed for a comment, explain why.',
+		'If replying to the overall review (not a specific inline comment), use commentId 0.',
 	);
 
 	return parts.join('\n');

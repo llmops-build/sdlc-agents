@@ -43,6 +43,7 @@ export interface RevisionWorkflowParams {
 
 /** A single inline review comment */
 export interface ReviewComment {
+	id: number;
 	path: string;
 	line: number | null;
 	body: string;
