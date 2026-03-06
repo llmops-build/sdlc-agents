@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { Sandbox } from '@cloudflare/sandbox';
 import { SdlcAgentWorkflow } from './workflows/sdlc-agent';
 import { RevisionWorkflow } from './workflows/revision';
-import { getGitHubApp, getInstallationOctokit } from './github/octokit';
+import { getInstallationOctokit } from './github/octokit';
 import type { IssuesLabeledPayload, PullRequestClosedPayload, PullRequestReviewPayload, ReviewComment } from './lib/types';
 
 export { SdlcAgentWorkflow, RevisionWorkflow, Sandbox };
@@ -36,9 +36,8 @@ app.post('/webhooks/github', async (c) => {
 		return c.json({ error: 'Missing signature' }, 401);
 	}
 
-	const ghApp = getGitHubApp(c.env);
-	const verified = await ghApp.webhooks.verify(body, signature);
-	if (!verified) {
+	const valid = await verifyWebhookSignature(c.env.GITHUB_WEBHOOK_SECRET, signature, body);
+	if (!valid) {
 		return c.json({ error: 'Invalid signature' }, 401);
 	}
 
@@ -65,8 +64,8 @@ app.post('/webhooks/github', async (c) => {
 
 		return c.json({ message: 'Event ignored' }, 200);
 	} catch (err: any) {
-		console.error('Webhook handler error:', err);
-		return c.json({ error: err.message ?? 'Internal error' }, 500);
+		console.error('Webhook handler error:', err?.stack ?? err);
+		return c.json({ error: err.message ?? 'Internal error', event, action: payload.action }, 500);
 	}
 });
 
@@ -245,6 +244,23 @@ async function handlePRClosedWithoutMerge(c: AppContext, payload: PullRequestClo
 		.run();
 
 	return c.json({ message: 'Session marked failed' }, 200);
+}
+
+/** Verify GitHub webhook signature using Web Crypto HMAC-SHA256 */
+async function verifyWebhookSignature(secret: string, signature: string, body: string): Promise<boolean> {
+	const encoder = new TextEncoder();
+	const key = await crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+	const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
+	const digest = 'sha256=' + Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+
+	if (digest.length !== signature.length) return false;
+	const a = encoder.encode(digest);
+	const b = encoder.encode(signature);
+	let mismatch = 0;
+	for (let i = 0; i < a.length; i++) {
+		mismatch |= a[i] ^ b[i];
+	}
+	return mismatch === 0;
 }
 
 export default app;
