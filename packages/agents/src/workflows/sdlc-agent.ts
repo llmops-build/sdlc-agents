@@ -1,17 +1,17 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
 import { getSandbox } from '@cloudflare/sandbox';
-import { getInstallationToken } from '../github/app';
-import { getDefaultBranch, getLatestCommitSha, createBranch, openPR, addComment, closeIssue } from '../github/api';
+import { getInstallationOctokit } from '../github/octokit';
 import { callGateway } from '../lib/llmops';
 import plannerPrompt from '../agents/planner.md';
-import type { SdlcWorkflowParams, PlanResult, CodingResult, ApprovalEvent } from '../lib/types';
+import type { SdlcWorkflowParams, PlanResult, CodingResult } from '../lib/types';
 
 /**
- * 3-step SDLC workflow:
+ * 2-step SDLC workflow:
  *   1. Plan  — generate implementation plan via Claude, post as issue comment
  *   2. Code  — spin up sandbox, clone repo, run `claude -p`, commit, push, open PR
- *   3. Wait  — hibernate until human merges/closes the PR (Copilot reviews automatically)
- *   4. Finalize — close issue, update D1 status
+ *
+ * After opening the PR, the workflow ends. Review feedback triggers RevisionWorkflow.
+ * PR merge/close are handled by simple webhook handlers.
  */
 export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParams> {
 	async run(event: Readonly<CloudflareWorkersModule.WorkflowEvent<SdlcWorkflowParams>>, step: CloudflareWorkersModule.WorkflowStep) {
@@ -20,8 +20,13 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 		// ── Step 0: Persist session ──────────────────────────────────────
 		await step.do('init-session', async () => {
-			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
-			await addComment(token, params.repoOwner, params.repoName, params.issueNumber, '🤖 **SDLC Agent** picking up this issue. Planning…');
+			const octokit = await getInstallationOctokit(this.env, params.installationId);
+			await octokit.rest.issues.createComment({
+				owner: params.repoOwner,
+				repo: params.repoName,
+				issue_number: params.issueNumber,
+				body: '🤖 **SDLC Agent** picking up this issue. Planning…',
+			});
 
 			await this.env.DB.prepare(
 				`INSERT OR REPLACE INTO sessions (id, workflow_instance_id, issue_number, repo_owner, repo_name, issue_title, issue_body, status)
@@ -61,7 +66,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 			}
 
 			// Post plan as issue comment
-			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+			const octokit = await getInstallationOctokit(this.env, params.installationId);
 			const planComment = [
 				'## 📋 Implementation Plan',
 				'',
@@ -73,7 +78,12 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				'---',
 				'_Starting implementation…_',
 			].join('\n');
-			await addComment(token, params.repoOwner, params.repoName, params.issueNumber, planComment);
+			await octokit.rest.issues.createComment({
+				owner: params.repoOwner,
+				repo: params.repoName,
+				issue_number: params.issueNumber,
+				body: planComment,
+			});
 
 			// Log step
 			await this.env.DB.prepare(
@@ -93,13 +103,25 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 		const codingResult = await step.do('code', async () => {
 			const startTime = Date.now();
 
-			// Fresh token for this step (tokens expire after 1 hour, workflow may have hibernated)
-			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
+			// Fresh Octokit for this step (tokens expire after 1 hour, workflow may have hibernated)
+			const octokit = await getInstallationOctokit(this.env, params.installationId);
+
+			// Get a raw token for git clone operations
+			const { data: { token } } = await octokit.rest.apps.createInstallationAccessToken({
+				installation_id: params.installationId,
+			});
 
 			// Create branch on GitHub
-			const defaultBranch = await getDefaultBranch(token, params.repoOwner, params.repoName);
-			const latestSha = await getLatestCommitSha(token, params.repoOwner, params.repoName, defaultBranch);
-			await createBranch(token, params.repoOwner, params.repoName, plan.branchName, latestSha);
+			const { data: repoData } = await octokit.rest.repos.get({ owner: params.repoOwner, repo: params.repoName });
+			const defaultBranch = repoData.default_branch;
+			const { data: refData } = await octokit.rest.git.getRef({ owner: params.repoOwner, repo: params.repoName, ref: `heads/${defaultBranch}` });
+			const latestSha = refData.object.sha;
+
+			// Delete existing branch if present (ignore errors)
+			try {
+				await octokit.rest.git.deleteRef({ owner: params.repoOwner, repo: params.repoName, ref: `heads/${plan.branchName}` });
+			} catch {}
+			await octokit.rest.git.createRef({ owner: params.repoOwner, repo: params.repoName, ref: `refs/heads/${plan.branchName}`, sha: latestSha });
 
 			// Spin up sandbox container
 			const sandbox = getSandbox(this.env.SANDBOX, sessionId, { keepAlive: true });
@@ -163,13 +185,12 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 
 				if (!logCheck.stdout?.trim()) {
 					// No commits at all — report back and bail
-					await addComment(
-						token,
-						params.repoOwner,
-						params.repoName,
-						params.issueNumber,
-						`⚠️ Claude Code ran but produced no changes. The plan may need to be more specific.\n\n<details><summary>Claude Code output</summary>\n\n\`\`\`\n${claudeResult.stdout?.slice(0, 2000) ?? '(empty)'}\n\`\`\`\n</details>`,
-					);
+					await octokit.rest.issues.createComment({
+						owner: params.repoOwner,
+						repo: params.repoName,
+						issue_number: params.issueNumber,
+						body: `⚠️ Claude Code ran but produced no changes. The plan may need to be more specific.\n\n<details><summary>Claude Code output</summary>\n\n\`\`\`\n${claudeResult.stdout?.slice(0, 2000) ?? '(empty)'}\n\`\`\`\n</details>`,
+					});
 					await this.env.DB.prepare(`UPDATE sessions SET status = 'failed', error_message = 'No changes produced' WHERE id = ?`)
 						.bind(sessionId)
 						.run();
@@ -191,7 +212,9 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 			}
 
 			// Open PR
-			const pr = await openPR(token, params.repoOwner, params.repoName, {
+			const { data: pr } = await octokit.rest.pulls.create({
+				owner: params.repoOwner,
+				repo: params.repoName,
 				title: `[SDLC Agent] ${params.issueTitle}`,
 				body: [
 					`Closes #${params.issueNumber}`,
@@ -207,7 +230,7 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 			});
 
 			// Update session
-			await this.env.DB.prepare(`UPDATE sessions SET pr_number = ?, pr_url = ?, status = 'awaiting_approval' WHERE id = ?`)
+			await this.env.DB.prepare(`UPDATE sessions SET pr_number = ?, pr_url = ?, status = 'awaiting_review' WHERE id = ?`)
 				.bind(pr.number, pr.html_url, sessionId)
 				.run();
 
@@ -218,13 +241,12 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				.run();
 
 			// Notify on the issue
-			await addComment(
-				token,
-				params.repoOwner,
-				params.repoName,
-				params.issueNumber,
-				`✅ Implementation complete! PR opened: ${pr.html_url}\n\nCopilot will review automatically. Please merge when ready.`,
-			);
+			await octokit.rest.issues.createComment({
+				owner: params.repoOwner,
+				repo: params.repoName,
+				issue_number: params.issueNumber,
+				body: `✅ Implementation complete! PR opened: ${pr.html_url}\n\nCopilot will review automatically. Please merge when ready.`,
+			});
 
 			return {
 				branchName: plan.branchName,
@@ -233,44 +255,6 @@ export class SdlcAgentWorkflow extends WorkflowEntrypoint<Env, SdlcWorkflowParam
 				filesChanged: plan.estimatedFiles,
 				commitSha: latestSha,
 			} satisfies CodingResult;
-		});
-
-		// If no PR was opened (no changes produced), end the workflow early
-		if (codingResult.prNumber === 0) {
-			return { sessionId, prNumber: 0, prUrl: '' };
-		}
-
-		// ── Step 3: Wait for human approval ──────────────────────────────
-		// Copilot reviews the PR automatically (configured via repo rulesets).
-		// Workflow hibernates here until the PR is merged or closed.
-		const approval = await step.waitForEvent<ApprovalEvent>('wait-for-human-approval', {
-			timeout: '7 days',
-			type: 'pr-resolution',
-		});
-
-		// ── Step 4: Finalize ─────────────────────────────────────────────
-		await step.do('finalize', async () => {
-			const token = await getInstallationToken(this.env.GITHUB_APP_ID, this.env.GITHUB_PRIVATE_KEY, params.installationId);
-
-			if (approval.payload.action === 'approved' && approval.payload.merged) {
-				// Close the issue as completed
-				await closeIssue(token, params.repoOwner, params.repoName, params.issueNumber);
-				await this.env.DB.prepare(`UPDATE sessions SET status = 'completed', updated_at = datetime('now') WHERE id = ?`)
-					.bind(sessionId)
-					.run();
-			} else {
-				await this.env.DB.prepare(
-					`UPDATE sessions SET status = 'failed', error_message = 'PR closed without merge', updated_at = datetime('now') WHERE id = ?`,
-				)
-					.bind(sessionId)
-					.run();
-			}
-
-			await this.env.DB.prepare(
-				`INSERT INTO step_logs (session_id, step_name, status, output_summary) VALUES (?, 'finalize', 'completed', ?)`,
-			)
-				.bind(sessionId, JSON.stringify(approval.payload))
-				.run();
 		});
 
 		return { sessionId, prNumber: codingResult.prNumber, prUrl: codingResult.prUrl };

@@ -13,6 +13,11 @@
 			"binding": "SDLC_AGENT_WORKFLOW",
 			"class_name": "SdlcAgentWorkflow",
 		},
+		{
+			"name": "revision-workflow",
+			"binding": "REVISION_WORKFLOW",
+			"class_name": "RevisionWorkflow",
+		},
 	],
 
 	"containers": [
