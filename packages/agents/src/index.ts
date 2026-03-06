@@ -112,37 +112,40 @@ async function handlePRReviewSubmitted(c: AppContext, payload: PullRequestReview
 	const repo = payload.repository;
 	const pr = payload.pull_request;
 
+	console.log(`PR review: state=${review.state}, user=${review.user.login}, pr=#${pr.number}, body=${!!review.body}`);
+
 	// Skip approved/dismissed reviews — only act on changes_requested or commented
 	if (review.state === 'approved' || review.state === 'dismissed') {
+		console.log(`Skipping: review state "${review.state}"`);
 		return c.json({ message: `Review state "${review.state}" ignored` }, 200);
 	}
 
 	// Skip bot reviews to avoid infinite loops
 	if (review.user.login.endsWith('[bot]')) {
+		console.log(`Skipping: bot review from ${review.user.login}`);
 		return c.json({ message: 'Bot review ignored' }, 200);
 	}
 
 	if (!payload.installation?.id) {
+		console.log('Skipping: no installation ID');
 		return c.json({ error: 'Missing installation ID in webhook payload' }, 400);
 	}
 
 	// Find session for this PR
 	const session = await c.env.DB.prepare(
-		`SELECT id, issue_number FROM sessions WHERE repo_owner = ? AND repo_name = ? AND pr_number = ? AND status IN ('awaiting_review', 'revision')`,
+		`SELECT id, issue_number, status FROM sessions WHERE repo_owner = ? AND repo_name = ? AND pr_number = ? AND status NOT IN ('completed')`,
 	)
 		.bind(repo.owner.login, repo.name, pr.number)
-		.first<{ id: string; issue_number: number }>();
+		.first<{ id: string; issue_number: number; status: string }>();
+
+	console.log(`Session lookup: repo=${repo.owner.login}/${repo.name}, pr=#${pr.number}, found=${!!session}, id=${session?.id}, status=${session?.status}`);
 
 	if (!session) {
 		return c.json({ message: 'No matching session found for this PR' }, 200);
 	}
 
-	// Check current status — skip if already in revision (prevent concurrent revisions)
-	const currentStatus = await c.env.DB.prepare(`SELECT status FROM sessions WHERE id = ?`)
-		.bind(session.id)
-		.first<{ status: string }>();
-
-	if (currentStatus?.status === 'revision') {
+	// Skip if already in revision (prevent concurrent revisions)
+	if (session.status === 'revision') {
 		return c.json({ message: 'Revision already in progress, skipping' }, 200);
 	}
 
@@ -161,6 +164,8 @@ async function handlePRReviewSubmitted(c: AppContext, payload: PullRequestReview
 		body: c.body,
 		diffHunk: c.diff_hunk,
 	}));
+
+	console.log(`Review comments: ${reviewComments.length}, body="${review.body?.slice(0, 100)}"`);
 
 	// Skip if no body and no inline comments
 	if (!review.body && reviewComments.length === 0) {
